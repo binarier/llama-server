@@ -1,0 +1,3 @@
+[submodule "externs/rust-llm"]
+	path = externs/rust-llm
+	url = git@git.highsharp.com:opensource/rust-llm.git
