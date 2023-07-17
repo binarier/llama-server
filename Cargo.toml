@@ -6,4 +6,19 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-llm = { path = "externs/rust-llm/crates/llm" }
+anyhow = "1.0.71"
+bytesize = "1.2.0"
+lazy_static = "1.4.0"
+llm = { path = "externs/rust-llm/crates/llm"}
+log = "0.4.19"
+rand = "0.8.5"
+rocket = { version = "=0.5.0-rc.3", features = ["json"] }
+rocket_cors = "=0.6.0-alpha2"
+serde = "1.0.171"
+serde_json = "1.0.102"
+spinoff = "0.7.0"
+tokio = "1.29.1"
+
+[features]
+default = []
+cublas = ["llm/cublas"]
