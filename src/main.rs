@@ -174,7 +174,7 @@ fn rocket() -> _ {
         context_size: 512,
         lora_adapters: None,
         use_gpu: true,
-        gpu_layers: Some(35),
+        gpu_layers: None,
     };
     let mut sp = Some(spinoff::Spinner::new(
         spinoff::spinners::Dots2,
