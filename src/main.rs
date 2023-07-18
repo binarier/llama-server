@@ -1,6 +1,8 @@
-use std::{path::Path, convert::Infallible, io::Write, sync::Mutex};
+use std::{path::PathBuf, convert::Infallible, io::Write, sync::Mutex, time::{SystemTime, UNIX_EPOCH}};
 
+use clap::{arg, value_parser};
 use llm::{TokenizerSource, ModelParameters, LoadProgress, ModelArchitecture, InferenceSessionConfig, InferenceParameters, InferenceResponse, InferenceFeedback, Model, InferenceStats};
+use pretty_env_logger::env_logger;
 use rand::thread_rng;
 use rocket::response::stream::{EventStream, Event};
 use rocket_cors::CorsOptions;
@@ -14,7 +16,7 @@ lazy_static::lazy_static! {
     static ref ENGINE: Mutex<Option<Engine>> = Mutex::new(None);
 }
 
-#[derive(Deserialize, Serialize, Clone)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct ChatMessage {
     role: String,
     content: String,
@@ -85,6 +87,11 @@ pub struct ChatResponse {
 pub fn create_chat_completion(request: Json<ChatCompletionRequest>) -> EventStream![] {
     let req = request.messages.clone();
     let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(1);
+    let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let uuid = uuid::Uuid::new_v4().to_string();
+
+    info!("msg:{:?}", req);
+
     std::thread::spawn(move || {
         let engine = ENGINE.lock().unwrap();
         let engine = engine.as_ref().unwrap();
@@ -101,15 +108,14 @@ pub fn create_chat_completion(request: Json<ChatCompletionRequest>) -> EventStre
     });
 
     //    {"id":"chatcmpl-7c7MaL1Pc0XPGGAPAzLL0ds61jGjQ","object":"chat.completion.chunk","created":1689319124,"model":"gpt-4-0613","choices":[{"index":0,"delta":{"content":"！"},"finish_reason":null}]}
-
     EventStream! {
         let mut first = true;
         while let Some(msg) = rx.recv().await {
 
             let mut x = json!({
-                "id" : "chatcmpl-7c7MaL1Pc0XPGGAPAzLL0ds61jGjQ",
+                "id" : uuid,
                 "object": "chat.completion.chunk",
-                "create": 1689319124,
+                "create": ts,
                 "choices" : [
                     {
                         "index" : 0,
@@ -129,9 +135,9 @@ pub fn create_chat_completion(request: Json<ChatCompletionRequest>) -> EventStre
 
             yield Event::data(s);
         }
+        log::info!("[{}] Done", uuid);
         yield Event::data("[DONE]");
     }
-
 
     // } else {
     //     match engine.chat(&request.messages) {
@@ -167,7 +173,25 @@ pub fn create_chat_completion(request: Json<ChatCompletionRequest>) -> EventStre
 
 #[launch]
 fn rocket() -> _ {
-    let model_file = Path::new("../7B_ggml/ggml-model-f16.bin");
+    env_logger::builder()
+        .filter_level(log::LevelFilter::Info)
+        .parse_default_env()
+        .init();
+
+    let matches = clap::command!() // requires `cargo` feature
+        .arg(
+            arg!(
+                -m --model <FILE> "model file"
+            )
+            .required(true)
+            .value_parser(value_parser!(PathBuf)),
+        )
+        .get_matches();
+
+    let model_file = matches.get_one::<PathBuf>("model").unwrap();
+
+    // let model_file = Path::new("../7B_ggml/ggml-model-f16.bin");
+    // let model_file = Path::new("../LLaMA/33B_merged-1/ggml-model-f16.bin");
     // let tk = Path::new("../7B_ggml/tokenizer.model");
     let params = ModelParameters {
         prefer_mmap: true,
@@ -243,30 +267,6 @@ fn rocket() -> _ {
 
 
     let model = model.unwrap();
-    // let res = session.infer::<Infallible>(
-    //     model.as_ref(),
-    //     &mut rng,
-    //     &llm::InferenceRequest {
-    //         prompt: prompt.as_str().into(),
-    //         parameters: &parameters,
-    //         play_back_previous_tokens: false,
-    //         maximum_token_count: None,
-    //     },
-    //     // OutputRequest
-    //     &mut Default::default(),
-    //     |r| match &r {
-    //         InferenceResponse::PromptToken(t) | InferenceResponse::InferredToken(t) => {
-    //             print!("{t}");
-    //             std::io::stdout().flush().unwrap();
-
-    //             Ok(InferenceFeedback::Continue)
-    //         }
-    //         _ => Ok(InferenceFeedback::Continue),
-    //     },
-    // );
-    // println!();
-
-    // res.ok();
 
     *ENGINE.lock().unwrap() = Some(Engine {
         model
@@ -352,7 +352,10 @@ impl Engine {
     }
 
     pub fn chat2(&self, messages: &[ChatMessage], callback: impl FnMut(InferenceResponse) -> std::result::Result<InferenceFeedback, std::convert::Infallible>) -> anyhow::Result<InferenceStats> {
-        let config = InferenceSessionConfig::default();
+        let config = InferenceSessionConfig { 
+            n_threads: 64,
+            ..Default::default()
+        };
 
         let mut session = self.model.start_session(config);
     
