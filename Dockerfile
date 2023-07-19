@@ -4,12 +4,12 @@ ARG UBUNTU_DIST=20.04
 FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu${UBUNTU_DIST} as builder
 
 ARG RUST_TOOLCHAIN=1.70.0
-ARG HTTP_PROXY=http://192.168.3.180:7779
-ARG HTTPS_PROXY=http://192.168.3.180:7779
 ARG APT_PROXY=http://192.168.24.2:8000/
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV LANG=C.UTF-8
+ENV http_proxy=http://192.168.3.180:7779
+ENV https_proxy=http://192.168.3.180:7779
 
 RUN echo Acquire::http::Proxy \"$APT_PROXY\"\; > /etc/apt/apt.conf.d/00-aptproxy
 RUN apt-get update
