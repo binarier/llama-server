@@ -1,4 +1,5 @@
 # OpenAI API Server
+[![pipeline status](https://git.highsharp.com/opensource/openai-server/badges/master/pipeline.svg)](https://git.highsharp.com/opensource/openai-server/-/commits/master)
 
 ## 系统依赖项
 ```
