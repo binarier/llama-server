@@ -186,13 +186,24 @@ fn rocket() -> _ {
             .required(true)
             .value_parser(value_parser!(PathBuf)),
         )
+        .arg(
+            arg!(
+                -t --threads <NUM> "number of threads"
+            )
+            .value_parser(value_parser!(usize))
+        )
         .get_matches();
 
     let model_file = matches.get_one::<PathBuf>("model").unwrap();
 
-    // let model_file = Path::new("../7B_ggml/ggml-model-f16.bin");
-    // let model_file = Path::new("../LLaMA/33B_merged-1/ggml-model-f16.bin");
-    // let tk = Path::new("../7B_ggml/tokenizer.model");
+    let parameters: InferenceParameters = Default::default();
+    let mut config: InferenceSessionConfig = Default::default();
+
+    if let Some(n_threads) = matches.get_one::<usize>("threads") {
+        info!("using {} threads", n_threads);
+        config.n_threads = *n_threads;
+    }
+
     let params = ModelParameters {
         prefer_mmap: true,
         context_size: 512,
@@ -269,7 +280,9 @@ fn rocket() -> _ {
     let model = model.unwrap();
 
     *ENGINE.lock().unwrap() = Some(Engine {
-        model
+        model,
+        parameters,
+        config,
     });
 
     rocket::build()
@@ -283,17 +296,22 @@ fn rocket() -> _ {
 
 pub struct Engine {
     model: Box<dyn Model>,
+    parameters: InferenceParameters, 
+    config: InferenceSessionConfig,
 }
 
 impl Engine {
-    pub fn new(model: Box<dyn Model>) -> Self {
-        Self { model }
+    pub fn new(model: Box<dyn Model>, parameters: InferenceParameters, config: InferenceSessionConfig) -> Self {
+        Self { 
+            model, 
+            parameters,
+            config,
+        }
     }
 
     pub fn chat(&self, messages: &[ChatMessage]) -> anyhow::Result<(String, InferenceStats)> {
-        let config = InferenceSessionConfig::default();
 
-        let mut session = self.model.start_session(config);
+        let mut session = self.model.start_session(self.config);
     
         let mut rng = thread_rng();
     
@@ -315,20 +333,13 @@ impl Engine {
         }
         prompt += "### Response:\n\n";
 
-        // println!("prompt:{}", prompt);
-        let parameters = InferenceParameters {
-            // n_threads: 32,
-            ..
-            Default::default()
-        };
-    
         let mut output = String::new();
         let res = session.infer::<Infallible>(
             self.model.as_ref(),
             &mut rng,
             &llm::InferenceRequest {
                 prompt: prompt.as_str().into(),
-                parameters: &parameters,
+                parameters: &self.parameters,
                 play_back_previous_tokens: false,
                 maximum_token_count: None,
             },
@@ -352,12 +363,7 @@ impl Engine {
     }
 
     pub fn chat2(&self, messages: &[ChatMessage], callback: impl FnMut(InferenceResponse) -> std::result::Result<InferenceFeedback, std::convert::Infallible>) -> anyhow::Result<InferenceStats> {
-        let config = InferenceSessionConfig { 
-            n_threads: 64,
-            ..Default::default()
-        };
-
-        let mut session = self.model.start_session(config);
+        let mut session = self.model.start_session(self.config);
     
         let mut rng = thread_rng();
     
@@ -380,18 +386,13 @@ impl Engine {
         prompt += "### Response:\n\n";
 
         // println!("prompt:{}", prompt);
-        let parameters = InferenceParameters {
-            // n_threads: 32,
-            ..
-            Default::default()
-        };
     
         let res = session.infer::<Infallible>(
             self.model.as_ref(),
             &mut rng,
             &llm::InferenceRequest {
                 prompt: prompt.as_str().into(),
-                parameters: &parameters,
+                parameters: &self.parameters,
                 play_back_previous_tokens: false,
                 maximum_token_count: None,
             },
