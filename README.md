@@ -21,5 +21,7 @@ $ cargo build --release --features cublas
 docker
 
 ```
-docker run --runtime=nvidia --rm -v (model_path):/models -p 8000:8000 git.highsharp.com:5050/opensource/openai-server/master:latest 
+docker run --runtime=nvidia --rm -v (model_path):/models -e MODEL_TYPE=q8_0 -p 8000:8000 git.highsharp.com:5050/opensource/openai-server/master:latest 
 ```
+
+MODEL_TYPE默认为f16
