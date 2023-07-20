@@ -25,4 +25,6 @@ WORKDIR /app
 COPY --from=builder /build/target/release/openai-server /app
 COPY --from=builder /build/Rocket.toml /app
 
-CMD [ "/app/openai-server", "-m", "/models/ggml-model-f16.bin" ]
+ENV MODEL_TYPE=f16
+
+CMD [ "/app/openai-server", "-m", "/models/ggml-model-$MODEL_TYPE.bin" ]
