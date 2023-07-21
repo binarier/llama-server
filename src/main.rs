@@ -1,19 +1,22 @@
 use std::{path::PathBuf, convert::Infallible, io::Write, sync::Mutex, time::{SystemTime, UNIX_EPOCH}};
 
 use clap::{arg, value_parser};
+use crossbeam::channel;
 use llm::{TokenizerSource, ModelParameters, LoadProgress, ModelArchitecture, InferenceSessionConfig, InferenceParameters, InferenceResponse, InferenceFeedback, Model, InferenceStats};
+use log::info;
 use pretty_env_logger::env_logger;
 use rand::thread_rng;
-use rocket::response::stream::{EventStream, Event};
-use rocket_cors::CorsOptions;
 use serde::{Deserialize, Serialize};
-use rocket::serde::json::Json;
 use serde_json::json;
-
-#[macro_use] extern crate rocket;
+use tiny_http::{Server, Header, StatusCode, HTTPVersion};
 
 lazy_static::lazy_static! {
     static ref ENGINE: Mutex<Option<Engine>> = Mutex::new(None);
+    static ref SSE_HEADERS: Vec<Header> = vec![
+        Header::from_bytes(&b"Content-Type"[..], &b"text/event-stream"[..]).unwrap(),
+        Header::from_bytes(&b"Cache-Control"[..], &b"no-cache"[..]).unwrap(),
+        Header::from_bytes(&b"Connection"[..], &b"keep-alive"[..]).unwrap(),
+    ];
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -23,7 +26,7 @@ pub struct ChatMessage {
     name: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct ChatCompletionRequest {
     pub model: Option<String>,
     pub messages: Vec<ChatMessage>,
@@ -82,97 +85,77 @@ pub struct ChatResponse {
     pub usage: Option<ChatUsage>,
 }
 
+fn handle_sse_request(mut request: tiny_http::Request) {
 
-#[post("/v1/chat/completions", format = "application/json", data = "<request>")]    // std::result::Result<Json<ChatResponse>, Status>
-pub fn create_chat_completion(request: Json<ChatCompletionRequest>) -> EventStream![] {
-    let req = request.messages.clone();
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(1);
+    let req: ChatCompletionRequest = serde_json::from_reader(request.as_reader()).unwrap();
+    info!("msg:{:#?}", req);
+    let msgs = req.messages;
+
+    // 设置响应头
+
+    let (tx, rx) = channel::unbounded::<String>();
+
     let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     let uuid = uuid::Uuid::new_v4().to_string();
 
-    info!("msg:{:?}", req);
+    crossbeam::scope(|s| {
 
-    std::thread::spawn(move || {
-        let engine = ENGINE.lock().unwrap();
-        let engine = engine.as_ref().unwrap();
-        engine.chat2(&req, |r| match &r {
-            InferenceResponse::InferredToken(t) => {
-                print!("{t}");
-                std::io::stdout().flush().unwrap();
+        s.spawn(move |_| {
+            let engine = ENGINE.lock().unwrap();
+            let engine = engine.as_ref().unwrap();
+            engine.chat2(&msgs, |r| match &r {
+                InferenceResponse::InferredToken(t) => {
+                    print!("{t}");
+                    std::io::stdout().flush().unwrap();
+    
+                    tx.send(t.to_string()).unwrap();
+                    Ok(InferenceFeedback::Continue)
+                }
+                _ => Ok(InferenceFeedback::Continue),
+            }).ok();
 
-                tx.blocking_send(t.to_string()).unwrap();
-                Ok(InferenceFeedback::Continue)
-            }
-            _ => Ok(InferenceFeedback::Continue),
-        }).ok();
-    });
+        });
 
-    //    {"id":"chatcmpl-7c7MaL1Pc0XPGGAPAzLL0ds61jGjQ","object":"chat.completion.chunk","created":1689319124,"model":"gpt-4-0613","choices":[{"index":0,"delta":{"content":"！"},"finish_reason":null}]}
-    EventStream! {
-        let mut first = true;
-        while let Some(msg) = rx.recv().await {
+        s.spawn(move |_| {
+            let mut writer = request.into_writer();
 
-            let mut x = json!({
-                "id" : uuid,
-                "object": "chat.completion.chunk",
-                "create": ts,
-                "choices" : [
-                    {
-                        "index" : 0,
-                        "delta" : {
-                            "content": msg
+            write_message_header(&mut writer, &HTTPVersion(1, 1), &StatusCode(200), &SSE_HEADERS).unwrap();
+
+            writer.flush().unwrap();
+
+            let mut first = true;
+            for msg in rx {
+                let mut x = json!({
+                    "id" : uuid,
+                    "object": "chat.completion.chunk",
+                    "create": ts,
+                    "choices" : [
+                        {
+                            "index" : 0,
+                            "delta" : {
+                                "content": msg
+                            }
                         }
-                    }
-                ]
-            });
-
-            if first {
-                first = false;
-                x["choices"][0]["delta"]["role"] = json!("assistant");
+                    ]
+                });
+    
+                if first {
+                    first = false;
+                    x["choices"][0]["delta"]["role"] = json!("assistant");
+                }
+            
+                let s = serde_json::to_string(&x).unwrap();
+                let formatted_event = format!("data: {}\n\n", s);
+                writer.write_all(formatted_event.as_bytes()).unwrap();
+                writer.flush().unwrap();
             }
-        
-            let s = serde_json::to_string(&x).unwrap();
-
-            yield Event::data(s);
-        }
-        log::info!("[{}] Done", uuid);
-        yield Event::data("[DONE]");
-    }
-
-    // } else {
-    //     match engine.chat(&request.messages) {
-    //         Ok((response, stats)) => {
-    //             let resp = ChatResponse {
-    //                 id: "chatcmpl-123".to_string(),
-    //                 object: "chat.completion".to_string(),
-    //                 created: 1677652288,
-    //                 choices: vec![ChatChoice {
-    //                     index: 0,
-    //                     message: ChatMessage {
-    //                         role: "assistant".to_string(),
-    //                         content: response,
-    //                         name: None,
-    //                     },
-    //                     finish_reason: "stop".to_string(),
-    //                 }],
-    //                 usage: ChatUsage {
-    //                     prompt_tokens: stats.prompt_tokens,
-    //                     completion_tokens: stats.predict_tokens,
-    //                     total_tokens: 0,
-    //                 },
-    //             };
-    //             Ok(Json(resp))
-    //         },
-    //         Err(e) => {
-    //             log::error!("Error: {}", e);
-    //             Err(Status::InternalServerError)
-    //         }
-    //     }
-    // }
+            writer.write_all("data: [DONE]\n\n".as_bytes()).unwrap();
+            writer.flush().unwrap();
+        });
+    }).expect("spawn failed");
 }
 
-#[launch]
-fn rocket() -> _ {
+fn main() {
     env_logger::builder()
         .filter_level(log::LevelFilter::Info)
         .parse_default_env()
@@ -285,13 +268,30 @@ fn rocket() -> _ {
         config,
     });
 
-    rocket::build()
-        .mount("/", routes![create_chat_completion])
-        .attach(CorsOptions::default().to_cors().unwrap())
-        // .manage(Engine {
-        //     model,
-        // })
+    let server = Server::http("0.0.0.0:8000").unwrap();
+    println!("Server listening on port 8000...");
+
+    loop {
+        // 接收连接
+        let request = match server.recv() {
+            Ok(request) => request,
+            Err(e) => {
+                println!("Error while handling request: {}", e);
+                continue;
+            }
+        };
+
+        // 如果请求路径是 SSE 的端点，则处理 SSE 请求
+        if request.url() == "/v1/chat/completions" {
+            handle_sse_request(request);
+        } else {
+            // 处理其他请求（可选）
+            // handle_other_requests(request);
+        }
+    }
 }
+
+
 
 
 pub struct Engine {
@@ -404,4 +404,37 @@ impl Engine {
         let stats = res.map_err(|x| anyhow::anyhow!("{}", x))?;
         Ok(stats)
     }
+}
+
+fn write_message_header<W>(
+    mut writer: W,
+    http_version: &HTTPVersion,
+    status_code: &StatusCode,
+    headers: &[Header],
+) -> std::io::Result<()>
+where
+    W: Write,
+{
+    // writing status line
+    write!(
+        &mut writer,
+        "HTTP/{}.{} {} {}\r\n",
+        http_version.0,
+        http_version.1,
+        status_code.0,
+        status_code.default_reason_phrase()
+    )?;
+
+    // writing headers
+    for header in headers.iter() {
+        writer.write_all(header.field.as_str().as_ref())?;
+        write!(&mut writer, ": ")?;
+        writer.write_all(header.value.as_str().as_ref())?;
+        write!(&mut writer, "\r\n")?;
+    }
+
+    // separator between header and data
+    write!(&mut writer, "\r\n")?;
+
+    Ok(())
 }
