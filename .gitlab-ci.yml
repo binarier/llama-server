@@ -3,3 +3,7 @@ stages:
 
 include:
   - template: Jobs/Build.gitlab-ci.yml
+
+build:
+  only:
+    - master
