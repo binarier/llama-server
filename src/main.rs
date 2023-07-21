@@ -1,14 +1,18 @@
-use std::{path::PathBuf, convert::Infallible, io::Write, sync::Mutex, time::{SystemTime, UNIX_EPOCH}};
+mod engine;
+mod api;
 
+use std::{path::PathBuf, io::Write, sync::Mutex, time::{SystemTime, UNIX_EPOCH}};
+
+use anyhow::Result;
 use clap::{arg, value_parser};
 use crossbeam::channel;
-use llm::{TokenizerSource, ModelParameters, LoadProgress, ModelArchitecture, InferenceSessionConfig, InferenceParameters, InferenceResponse, InferenceFeedback, Model, InferenceStats};
-use log::info;
+use llm::{TokenizerSource, ModelParameters, LoadProgress, InferenceSessionConfig, InferenceParameters, InferenceResponse, InferenceFeedback, ModelArchitecture};
+use log::{info, error};
 use pretty_env_logger::env_logger;
-use rand::thread_rng;
-use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tiny_http::{Server, Header, StatusCode, HTTPVersion};
+use tiny_http::{Server, Header, StatusCode, HTTPVersion, Response};
+
+use crate::{api::ChatCompletionRequest, engine::Engine};
 
 lazy_static::lazy_static! {
     static ref ENGINE: Mutex<Option<Engine>> = Mutex::new(None);
@@ -17,145 +21,10 @@ lazy_static::lazy_static! {
         Header::from_bytes(&b"Cache-Control"[..], &b"no-cache"[..]).unwrap(),
         Header::from_bytes(&b"Connection"[..], &b"keep-alive"[..]).unwrap(),
     ];
+    static ref JSON_HEADER: Header = Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct ChatMessage {
-    role: String,
-    content: String,
-    name: Option<String>,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct ChatCompletionRequest {
-    pub model: Option<String>,
-    pub messages: Vec<ChatMessage>,
-    pub temperature: Option<f32>,
-    // top_p: Optional[float] = 1.0
-    // top_k: Optional[int] = 40
-    // n: Optional[int] = 1
-    // max_tokens: Optional[int] = 128
-    // num_beams: Optional[int] = 4
-    // stop: Optional[Union[str, List[str]]] = None
-    pub stream: Option<bool>,
-    // repetition_penalty: Optional[float] = 1.0
-    // user: Optional[str] = None
-}
-
-
-// {
-//     "id": "chatcmpl-123",
-//     "object": "chat.completion",
-//     "created": 1677652288,
-//     "choices": [{
-//       "index": 0,
-//       "message": {
-//         "role": "assistant",
-//         "content": "\n\nHello there, how may I assist you today?",
-//       },
-//       "finish_reason": "stop"
-//     }],
-//     "usage": {
-//       "prompt_tokens": 9,
-//       "completion_tokens": 12,
-//       "total_tokens": 21
-//     }
-//   }
-  
-#[derive(Serialize)]
-pub struct ChatChoice {
-    pub index: usize,
-    pub message: ChatMessage,
-    pub finish_reason: Option<String>,
-}
-
-#[derive(Serialize)]
-pub struct ChatUsage {
-    pub prompt_tokens: usize,
-    pub completion_tokens: usize,
-    pub total_tokens: usize,
-}
-
-#[derive(Serialize)]
-pub struct ChatResponse {
-    pub id: String,
-    pub object: String,
-    pub created: u64,
-    pub choices: Vec<ChatChoice>,
-    pub usage: Option<ChatUsage>,
-}
-
-fn handle_sse_request(mut request: tiny_http::Request) {
-
-    let req: ChatCompletionRequest = serde_json::from_reader(request.as_reader()).unwrap();
-    info!("msg:{:#?}", req);
-    let msgs = req.messages;
-
-    // 设置响应头
-
-    let (tx, rx) = channel::unbounded::<String>();
-
-    let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-    let uuid = uuid::Uuid::new_v4().to_string();
-
-    crossbeam::scope(|s| {
-
-        s.spawn(move |_| {
-            let engine = ENGINE.lock().unwrap();
-            let engine = engine.as_ref().unwrap();
-            engine.chat2(&msgs, |r| match &r {
-                InferenceResponse::InferredToken(t) => {
-                    print!("{t}");
-                    std::io::stdout().flush().unwrap();
-    
-                    tx.send(t.to_string()).unwrap();
-                    Ok(InferenceFeedback::Continue)
-                }
-                _ => Ok(InferenceFeedback::Continue),
-            }).ok();
-
-        });
-
-        s.spawn(move |_| {
-            let mut writer = request.into_writer();
-
-            write_message_header(&mut writer, &HTTPVersion(1, 1), &StatusCode(200), &SSE_HEADERS).unwrap();
-
-            writer.flush().unwrap();
-
-            let mut first = true;
-            for msg in rx {
-                let mut x = json!({
-                    "id" : uuid,
-                    "object": "chat.completion.chunk",
-                    "create": ts,
-                    "choices" : [
-                        {
-                            "index" : 0,
-                            "delta" : {
-                                "content": msg
-                            }
-                        }
-                    ]
-                });
-    
-                if first {
-                    first = false;
-                    x["choices"][0]["delta"]["role"] = json!("assistant");
-                }
-            
-                let s = serde_json::to_string(&x).unwrap();
-                let formatted_event = format!("data: {}\n\n", s);
-                writer.write_all(formatted_event.as_bytes()).unwrap();
-                writer.flush().unwrap();
-            }
-            writer.write_all("data: [DONE]\n\n".as_bytes()).unwrap();
-            writer.flush().unwrap();
-        });
-    }).expect("spawn failed");
-}
-
-fn main() {
+fn main() -> Result<()> {
     env_logger::builder()
         .filter_level(log::LevelFilter::Info)
         .parse_default_env()
@@ -187,7 +56,7 @@ fn main() {
         config.n_threads = *n_threads;
     }
 
-    let params = ModelParameters {
+    let model_params = ModelParameters {
         prefer_mmap: true,
         context_size: 512,
         lora_adapters: None,
@@ -206,7 +75,7 @@ fn main() {
         Some(ModelArchitecture::Llama),
         model_file,
         TokenizerSource::Embedded,
-        params,
+        model_params,
         |progress| match progress {
             LoadProgress::HyperparametersLoaded => {
                 if let Some(sp) = sp.as_mut() {
@@ -262,11 +131,7 @@ fn main() {
 
     let model = model.unwrap();
 
-    *ENGINE.lock().unwrap() = Some(Engine {
-        model,
-        parameters,
-        config,
-    });
+    *ENGINE.lock().unwrap() = Some(Engine::new(model, parameters, config));
 
     let server = Server::http("0.0.0.0:8000").unwrap();
     println!("Server listening on port 8000...");
@@ -283,7 +148,7 @@ fn main() {
 
         // 如果请求路径是 SSE 的端点，则处理 SSE 请求
         if request.url() == "/v1/chat/completions" {
-            handle_sse_request(request);
+            handle_chat_completions(request);
         } else {
             // 处理其他请求（可选）
             // handle_other_requests(request);
@@ -291,119 +156,133 @@ fn main() {
     }
 }
 
-
-
-
-pub struct Engine {
-    model: Box<dyn Model>,
-    parameters: InferenceParameters, 
-    config: InferenceSessionConfig,
+fn handle_chat_completions(mut request: tiny_http::Request) {
+    match serde_json::from_reader::<_, ChatCompletionRequest>(request.as_reader()) {
+        Ok(ccr) => {
+            info!("request:{:#?}", ccr);
+            handle_stream_request(ccr, request).ok();
+        },
+        Err(x) => {
+            log::error!("error: {}", x);
+            request.respond(
+                Response::from_string(x.to_string()).with_status_code(400)).ok();
+        },
+    }
 }
 
-impl Engine {
-    pub fn new(model: Box<dyn Model>, parameters: InferenceParameters, config: InferenceSessionConfig) -> Self {
-        Self { 
-            model, 
-            parameters,
-            config,
-        }
-    }
 
-    pub fn chat(&self, messages: &[ChatMessage]) -> anyhow::Result<(String, InferenceStats)> {
 
-        let mut session = self.model.start_session(self.config);
+fn handle_stream_request(req: ChatCompletionRequest, request: tiny_http::Request) -> Result<()> {
+
+    let msgs = req.messages;
+
+    let (tx, rx) = channel::unbounded::<String>();
+    let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let uuid = uuid::Uuid::new_v4().to_string();
+
+    crossbeam::scope(|s| {
+
+        if req.stream {
+
+            s.spawn(move |_| {
+                let engine = ENGINE.lock().unwrap();
+                let engine = engine.as_ref().unwrap();
     
-        let mut rng = thread_rng();
-    
-        let init_prompt = include_str!("alpaca-initial.txt");
-        let mut prompt = init_prompt.to_string();
+                engine.chat(&msgs, |r| match &r {
+                        InferenceResponse::InferredToken(t) => {
+                            print!("{t}");
+                            std::io::stdout().flush().unwrap();
+            
+                            tx.send(t.to_string()).unwrap();
+                            Ok(InferenceFeedback::Continue)
+                        }
+                        _ => Ok(InferenceFeedback::Continue),
+                }).unwrap();
+            });
 
-        for message in messages {
-            match message.role.as_str() {
-                "user" => {
-                    prompt += format!("### Instruction:\n\n{}\n", message.content).as_str();
-                },
-                "assistant" => {
-                    prompt += format!("### Response:\n\n{}\n", message.content).as_str();
+            let mut writer = request.into_writer();
+
+            write_message_header(&mut writer, &HTTPVersion(1, 1), &StatusCode(200), &SSE_HEADERS).unwrap();
+
+            writer.flush().unwrap();
+
+            let mut first = true;
+            for msg in rx {
+                let mut x = json!({
+                    "id" : uuid,
+                    "object": "chat.completion.chunk",
+                    "create": ts,
+                    "choices" : [
+                        {
+                            "index" : 0,
+                            "delta" : {
+                                "content": msg
+                            }
+                        }
+                    ]
+                });
+    
+                if first {
+                    first = false;
+                    x["choices"][0]["delta"]["role"] = json!("assistant");
                 }
-                _ => {
-                    panic!("unknown role");
-                }
+            
+                let s = serde_json::to_string(&x).unwrap();
+                let formatted_event = format!("data: {}\n\n", s);
+                writer.write_all(formatted_event.as_bytes()).unwrap();
+                writer.flush().unwrap();
             }
-        }
-        prompt += "### Response:\n\n";
-
-        let mut output = String::new();
-        let res = session.infer::<Infallible>(
-            self.model.as_ref(),
-            &mut rng,
-            &llm::InferenceRequest {
-                prompt: prompt.as_str().into(),
-                parameters: &self.parameters,
-                play_back_previous_tokens: false,
-                maximum_token_count: None,
-            },
-            // OutputRequest
-            &mut Default::default(),
-            |r| match &r {
+            writer.write_all("data: [DONE]\n\n".as_bytes()).unwrap();
+            writer.flush().unwrap();
+        } else {
+            let engine = ENGINE.lock().unwrap();
+            let engine = engine.as_ref().unwrap();
+            let mut response = String::new();
+            let stats = engine.chat(&msgs, |r| match &r {
                 InferenceResponse::InferredToken(t) => {
                     print!("{t}");
                     std::io::stdout().flush().unwrap();
-
-                    output.push_str(t);
     
+                    response.push_str(t);
                     Ok(InferenceFeedback::Continue)
                 }
                 _ => Ok(InferenceFeedback::Continue),
-            },
-        );
-        println!();
-        let stats = res.map_err(|x| anyhow::anyhow!("{}", x))?;
-        Ok((output, stats))
-    }
+            });
 
-    pub fn chat2(&self, messages: &[ChatMessage], callback: impl FnMut(InferenceResponse) -> std::result::Result<InferenceFeedback, std::convert::Infallible>) -> anyhow::Result<InferenceStats> {
-        let mut session = self.model.start_session(self.config);
-    
-        let mut rng = thread_rng();
-    
-        let init_prompt = include_str!("alpaca-initial.txt");
-        let mut prompt = init_prompt.to_string();
+            match stats {
+                Ok(stats) => {
+                    let json = json!({
+                        "id": "uuid",
+                        "object": "chat.completion",
+                        "created": ts,
+                        "choices": [{
+                            "index": 0,
+                            "message": {
+                            "role": "assistant",
+                            "content": response,
+                            },
+                            "finish_reason": "stop"
+                        }],
+                        "usage": {
+                            "prompt_tokens": stats.prompt_tokens,
+                            "completion_tokens": stats.predict_tokens,
+                            "total_tokens": stats.prompt_tokens + stats.predict_tokens
+                        }
+                    });
 
-        for message in messages {
-            match message.role.as_str() {
-                "user" | "system" => {
-                    prompt += format!("### Instruction:\n\n{}\n", message.content).as_str();
-                },
-                "assistant" => {
-                    prompt += format!("### Response:\n\n{}\n", message.content).as_str();
+                    let response = Response::from_string(serde_json::to_string(&json).expect("invalid json"))
+                        .with_status_code(200)
+                        .with_header(JSON_HEADER.clone());
+                    request.respond(response).ok();
                 }
-                _ => {
-                    panic!("unknown role");
+                Err(x) => {
+                    error!("error: {}", x);
+                    request.respond(Response::from_string("error").with_status_code(500)).ok();
                 }
             }
         }
-        prompt += "### Response:\n\n";
-
-        // println!("prompt:{}", prompt);
-    
-        let res = session.infer::<Infallible>(
-            self.model.as_ref(),
-            &mut rng,
-            &llm::InferenceRequest {
-                prompt: prompt.as_str().into(),
-                parameters: &self.parameters,
-                play_back_previous_tokens: false,
-                maximum_token_count: None,
-            },
-            // OutputRequest
-            &mut Default::default(),
-            callback,
-        );
-        println!();
-        let stats = res.map_err(|x| anyhow::anyhow!("{}", x))?;
-        Ok(stats)
-    }
+    }).map_err(|_| anyhow::anyhow!("scope failed"))?;
+    Ok(())
 }
 
 fn write_message_header<W>(
