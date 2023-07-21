@@ -5,5 +5,5 @@ include:
   - template: Jobs/Build.gitlab-ci.yml
 
 build:
-  only:
-    - master
+  rules:
+    if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
