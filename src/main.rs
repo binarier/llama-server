@@ -6,7 +6,7 @@ use std::{path::PathBuf, io::Write, sync::Mutex, time::{SystemTime, UNIX_EPOCH}}
 use anyhow::Result;
 use clap::{arg, value_parser};
 use crossbeam::channel;
-use llm::{TokenizerSource, ModelParameters, LoadProgress, InferenceSessionConfig, InferenceParameters, InferenceResponse, InferenceFeedback, ModelArchitecture};
+use llm::{TokenizerSource, ModelParameters, LoadProgress, InferenceSessionConfig, InferenceResponse, InferenceFeedback, ModelArchitecture};
 use log::{info, error};
 use pretty_env_logger::env_logger;
 use serde_json::json;
@@ -48,7 +48,6 @@ fn main() -> Result<()> {
 
     let model_file = matches.get_one::<PathBuf>("model").unwrap();
 
-    let parameters: InferenceParameters = Default::default();
     let mut config: InferenceSessionConfig = Default::default();
 
     if let Some(n_threads) = matches.get_one::<usize>("threads") {
@@ -131,7 +130,7 @@ fn main() -> Result<()> {
 
     let model = model.unwrap();
 
-    *ENGINE.lock().unwrap() = Some(Engine::new(model, parameters, config));
+    *ENGINE.lock().unwrap() = Some(Engine::new(model, config));
 
     let server = Server::http("0.0.0.0:8000").unwrap();
     println!("Server listening on port 8000...");
@@ -179,6 +178,7 @@ fn handle_stream_request(req: ChatCompletionRequest, request: tiny_http::Request
     let (tx, rx) = channel::unbounded::<String>();
     let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     let uuid = uuid::Uuid::new_v4().to_string();
+    let temperature = req.temperature.unwrap_or(1f32);
 
     crossbeam::scope(|s| {
 
@@ -188,7 +188,7 @@ fn handle_stream_request(req: ChatCompletionRequest, request: tiny_http::Request
                 let engine = ENGINE.lock().unwrap();
                 let engine = engine.as_ref().unwrap();
     
-                engine.chat(&msgs, |r| match &r {
+                engine.chat(&msgs, temperature, |r| match &r {
                         InferenceResponse::InferredToken(t) => {
                             print!("{t}");
                             std::io::stdout().flush().unwrap();
@@ -238,7 +238,7 @@ fn handle_stream_request(req: ChatCompletionRequest, request: tiny_http::Request
             let engine = ENGINE.lock().unwrap();
             let engine = engine.as_ref().unwrap();
             let mut response = String::new();
-            let stats = engine.chat(&msgs, |r| match &r {
+            let stats = engine.chat(&msgs, temperature, |r| match &r {
                 InferenceResponse::InferredToken(t) => {
                     print!("{t}");
                     std::io::stdout().flush().unwrap();

@@ -1,26 +1,24 @@
-use std::convert::Infallible;
+use std::{convert::Infallible, sync::Arc};
 
-use llm::{Model, InferenceParameters, InferenceSessionConfig, InferenceStats, InferenceResponse, InferenceFeedback};
+use llm::{Model, InferenceParameters, InferenceSessionConfig, InferenceStats, InferenceResponse, InferenceFeedback, samplers::TopPTopK};
 use rand::thread_rng;
 
 use crate::api::ChatMessage;
 
 pub struct Engine {
     model: Box<dyn Model>,
-    parameters: InferenceParameters, 
     config: InferenceSessionConfig,
 }
 
 impl Engine {
-    pub fn new(model: Box<dyn Model>, parameters: InferenceParameters, config: InferenceSessionConfig) -> Self {
+    pub fn new(model: Box<dyn Model>, config: InferenceSessionConfig) -> Self {
         Self { 
             model, 
-            parameters,
             config,
         }
     }
 
-    pub fn chat(&self, messages: &[ChatMessage], callback: impl FnMut(InferenceResponse) -> std::result::Result<InferenceFeedback, std::convert::Infallible>) -> anyhow::Result<InferenceStats> {
+    pub fn chat(&self, messages: &[ChatMessage], temperature: f32, callback: impl FnMut(InferenceResponse) -> std::result::Result<InferenceFeedback, std::convert::Infallible>) -> anyhow::Result<InferenceStats> {
         let mut session = self.model.start_session(self.config);
     
         let mut rng = thread_rng();
@@ -44,13 +42,20 @@ impl Engine {
         prompt += "### Response:\n\n";
 
         // println!("prompt:{}", prompt);
+        let parameters = InferenceParameters {
+            sampler: Arc::new(TopPTopK {
+                temperature,
+                ..
+                Default::default()
+            }),
+        };
     
         let res = session.infer::<Infallible>(
             self.model.as_ref(),
             &mut rng,
             &llm::InferenceRequest {
                 prompt: prompt.as_str().into(),
-                parameters: &self.parameters,
+                parameters: &parameters,
                 play_back_previous_tokens: false,
                 maximum_token_count: None,
             },
