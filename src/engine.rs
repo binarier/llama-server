@@ -1,5 +1,6 @@
 use std::{convert::Infallible, sync::Arc};
 
+use anyhow::Result;
 use llm::{Model, InferenceParameters, InferenceSessionConfig, InferenceStats, InferenceResponse, InferenceFeedback, samplers::TopPTopK};
 use rand::thread_rng;
 
@@ -18,7 +19,7 @@ impl Engine {
         }
     }
 
-    pub fn chat(&self, messages: &[ChatMessage], temperature: f32, callback: impl FnMut(InferenceResponse) -> std::result::Result<InferenceFeedback, std::convert::Infallible>) -> anyhow::Result<InferenceStats> {
+    pub fn chat(&self, messages: &[ChatMessage], temperature: f32, callback: impl FnMut(InferenceResponse) -> std::result::Result<InferenceFeedback, std::convert::Infallible>) -> Result<InferenceStats> {
         let mut session = self.model.start_session(self.config);
     
         let mut rng = thread_rng();
@@ -41,7 +42,6 @@ impl Engine {
         }
         prompt += "### Response:\n\n";
 
-        // println!("prompt:{}", prompt);
         let parameters = InferenceParameters {
             sampler: Arc::new(TopPTopK {
                 temperature,
