@@ -4,6 +4,6 @@ stages:
 include:
   - template: Jobs/Build.gitlab-ci.yml
 
-# build:
-#   rules:
-#     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+build:
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
