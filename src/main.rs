@@ -180,7 +180,7 @@ fn handle_stream_request(req: ChatCompletionRequest, request: Request, engine: &
 
     crossbeam::scope(|s| {
 
-        match engine.try_lock_for(Duration::from_secs(0)) {
+        match engine.try_lock_for(Duration::from_secs(60)) {
             Some(engine) => {
                 // 建线程处理响应
                 s.spawn(|_| {
