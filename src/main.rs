@@ -57,7 +57,7 @@ fn main() -> Result<()> {
 
     let model_params = ModelParameters {
         prefer_mmap: true,
-        context_size: 512,
+        context_size: 8192,
         lora_adapters: None,
         use_gpu: true,
         gpu_layers: None,
@@ -280,7 +280,7 @@ fn handle_stream_request(req: ChatCompletionRequest, request: Request, engine: &
                 match stats {
                     Ok(stats) => {
                         // info!("stats: {:#?}", stats);
-                        info!("{} tokens / {} ms, {:.2} tokens / s", stats.predict_tokens, stats.predict_duration.as_millis(), stats.predict_tokens as f64 * 1000.0 / stats.predict_duration.as_millis() as f64);
+                        println!("{} tokens / {} ms, {:.2} tokens / s", stats.predict_tokens, stats.predict_duration.as_millis(), stats.predict_tokens as f64 * 1000.0 / stats.predict_duration.as_millis() as f64);
                     },
                     Err(x) => warn!("infer failed: {}", x),
                 }
