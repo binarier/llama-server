@@ -1,7 +1,7 @@
 mod engine;
 mod api;
 
-use std::{path::PathBuf, io::Write, time::{SystemTime, UNIX_EPOCH, Duration}};
+use std::{path::PathBuf, io::Write, time::{SystemTime, UNIX_EPOCH, Duration}, sync::{atomic::{AtomicBool, Ordering}, Arc}};
 
 use anyhow::Result;
 use clap::{arg, value_parser};
@@ -182,15 +182,20 @@ fn handle_stream_request(req: ChatCompletionRequest, request: Request, engine: &
 
         match engine.try_lock_for(Duration::from_secs(60)) {
             Some(engine) => {
+                let terminate = Arc::new(AtomicBool::new(false));
+
+                let t = terminate.clone();
                 // 建线程处理响应
-                s.spawn(|_| {
+                s.spawn(move |_| {
                     if req.stream {
 
                         let mut writer = request.into_writer();
             
-                        write_message_header(&mut writer, &HTTPVersion(1, 1), &StatusCode(200), &SSE_HEADERS).unwrap();
-            
-                        writer.flush().unwrap();
+                        if let Err(x) = write_message_header(&mut writer, &HTTPVersion(1, 1), &StatusCode(200), &SSE_HEADERS) {
+                            warn!("error while writing header: {}", x);
+                            t.store(true, Ordering::Relaxed);
+                            return;
+                        }
             
                         let mut first = true;
                         for msg in rx {
@@ -215,11 +220,18 @@ fn handle_stream_request(req: ChatCompletionRequest, request: Request, engine: &
                         
                             let s = serde_json::to_string(&x).unwrap();
                             let formatted_event = format!("data: {}\n\n", s);
-                            writer.write_all(formatted_event.as_bytes()).unwrap();
-                            writer.flush().unwrap();
+                            if let Err(x) = writer.write_all(formatted_event.as_bytes()).and_then(|_| writer.flush()) {
+                                warn!("error while writing event: {}", x);
+                                t.store(true, Ordering::Relaxed);
+                                break;
+                            }
                         }
-                        writer.write_all("data: [DONE]\n\n".as_bytes()).unwrap();
-                        writer.flush().unwrap();
+                        if !t.load(Ordering::Relaxed) {
+                            if let Err(x) = writer.write_all("data: [DONE]\n\n".as_bytes()).and_then(|_| writer.flush()) {
+                                warn!("error while writing event: {}", x);
+                                t.store(true, Ordering::Relaxed);
+                            }
+                        }
                     } else {
                         let txt = rx.into_iter().collect::<Vec<String>>().join("");
                         let json = json!({
@@ -249,8 +261,10 @@ fn handle_stream_request(req: ChatCompletionRequest, request: Request, engine: &
                 });
 
                 // 主线程跑llm
-                let stats = engine.chat(&msgs, temperature, |r| match &r {
-                        InferenceResponse::InferredToken(t) => {
+                let stats = engine.chat(&msgs, temperature, |r| {
+                    match (terminate.load(Ordering::Relaxed), &r) {
+                        (true, _) => Ok(InferenceFeedback::Halt),
+                        (false, InferenceResponse::InferredToken(t)) => {
                             print!("{t}");
                             std::io::stdout().flush().unwrap();
             
@@ -258,12 +272,16 @@ fn handle_stream_request(req: ChatCompletionRequest, request: Request, engine: &
                             Ok(InferenceFeedback::Continue)
                         }
                         _ => Ok(InferenceFeedback::Continue),
+                    }
                 });
                 drop(engine);
                 drop(tx);
 
                 match stats {
-                    Ok(stats) => info!("stats: {:#?}", stats),
+                    Ok(stats) => {
+                        // info!("stats: {:#?}", stats);
+                        info!("{} tokens / {} ms, {:.2} tokens / s", stats.predict_tokens, stats.predict_duration.as_millis(), stats.predict_tokens as f64 * 1000.0 / stats.predict_duration.as_millis() as f64);
+                    },
                     Err(x) => warn!("infer failed: {}", x),
                 }
             },
@@ -306,6 +324,8 @@ where
 
     // separator between header and data
     write!(&mut writer, "\r\n")?;
+
+    writer.flush()?;
 
     Ok(())
 }
