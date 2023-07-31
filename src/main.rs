@@ -56,11 +56,9 @@ fn main() -> Result<()> {
     }
 
     let model_params = ModelParameters {
-        prefer_mmap: true,
         context_size: 8192,
-        lora_adapters: None,
         use_gpu: true,
-        gpu_layers: None,
+        ..Default::default()
     };
     let mut sp = Some(spinoff::Spinner::new(
         spinoff::spinners::Dots2,
