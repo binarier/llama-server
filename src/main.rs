@@ -44,19 +44,29 @@ fn main() -> Result<()> {
             )
             .value_parser(value_parser!(usize))
         )
+        .arg(
+            arg!(
+                --context <NUM> "number of context tokens"
+            )
+            .default_value("1024")
+            .value_parser(value_parser!(usize))
+        )
         .get_matches();
 
     let model_file = matches.get_one::<PathBuf>("model").unwrap();
 
     let mut config: InferenceSessionConfig = Default::default();
+    let context_size = matches.get_one::<usize>("context").unwrap();
 
     if let Some(n_threads) = matches.get_one::<usize>("threads") {
         info!("using {} threads", n_threads);
         config.n_threads = *n_threads;
     }
 
+    info!("using context size of {}", context_size);
+
     let model_params = ModelParameters {
-        context_size: 8192,
+        context_size: *context_size,
         use_gpu: true,
         ..Default::default()
     };
@@ -145,6 +155,14 @@ fn main() -> Result<()> {
                 s.spawn(|_| {
                     handle_chat_completions(request, &engine);
                 });
+            } else if request.url() == "/v1/models" {
+                s.spawn(move |_| {
+                    let json_data = handle_models();
+                    let response = Response::from_string(json_data);
+                    if let Err(x) = request.respond(response) {
+                        log::error!("error responding to request: {}", x);
+                    }
+                });
             } else {
                 // 处理其他请求（可选）
                 // handle_other_requests(request);
@@ -153,6 +171,22 @@ fn main() -> Result<()> {
     }).expect("scope failed");
     Ok(())
 }
+
+fn handle_models() -> String {
+    let ret = json!({
+        "data": [
+          {
+            "id": "llama",
+            "object": "model",
+            "owned_by": "hs",
+            "permission": []
+          }
+        ],
+        "object": "list"
+      });
+    ret.to_string()
+}
+
 
 fn handle_chat_completions(mut request: Request, engine: &Mutex<Engine>) {
     match serde_json::from_reader::<_, ChatCompletionRequest>(request.as_reader()) {
