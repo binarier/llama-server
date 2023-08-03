@@ -46,6 +46,13 @@ fn main() -> Result<()> {
         )
         .arg(
             arg!(
+                -b --batch <NUM> "size of batch"
+            )
+            .default_value("256")
+            .value_parser(value_parser!(usize))
+        )
+        .arg(
+            arg!(
                 --context <NUM> "number of context tokens"
             )
             .default_value("1024")
@@ -69,7 +76,10 @@ fn main() -> Result<()> {
         config.n_threads = *n_threads;
     }
 
-    config.n_batch = 256;
+    if let Some(n_batch) = matches.get_one::<usize>("batch") {
+        info!("using {} batch size", n_batch);
+        config.n_batch = *n_batch;
+    }
 
     info!("using context size of {}", context_size);
 
@@ -165,7 +175,7 @@ fn main() -> Result<()> {
                 });
             } else if request.url() == "/v1/models" {
                 s.spawn(move |_| {
-                    let json_data = handle_models();
+                    let json_data = handle_models(legecy);
                     let response = Response::from_string(json_data);
                     if let Err(x) = request.respond(response) {
                         log::error!("error responding to request: {}", x);
@@ -180,11 +190,11 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn handle_models() -> String {
+fn handle_models(legecy: bool) -> String {
     let ret = json!({
         "data": [
           {
-            "id": "llama",
+            "id": if legecy { "llama" } else { "llama2" },
             "object": "model",
             "owned_by": "hs",
             "permission": []
