@@ -51,12 +51,18 @@ fn main() -> Result<()> {
             .default_value("1024")
             .value_parser(value_parser!(usize))
         )
+        .arg(
+            arg!(
+                --legecy "use legacy model prompt"
+            )
+        )
         .get_matches();
 
     let model_file = matches.get_one::<PathBuf>("model").unwrap();
 
     let mut config: InferenceSessionConfig = Default::default();
     let context_size = matches.get_one::<usize>("context").unwrap();
+    let legecy = matches.get_flag("legecy");
 
     if let Some(n_threads) = matches.get_one::<usize>("threads") {
         info!("using {} threads", n_threads);
@@ -137,7 +143,7 @@ fn main() -> Result<()> {
         },
     )?;
 
-    let engine = Mutex::new(Engine::new(model, config));
+    let engine = Mutex::new(Engine::new(model, config, !legecy));
 
     let server = Server::http("0.0.0.0:8000").unwrap();
     println!("Server listening on port 8000...");

@@ -11,13 +11,15 @@ use crate::api::ChatMessage;
 pub struct Engine {
     model: Box<dyn Model>,
     config: InferenceSessionConfig,
+    llama2: bool,
 }
 
 impl Engine {
-    pub fn new(model: Box<dyn Model>, config: InferenceSessionConfig) -> Self {
+    pub fn new(model: Box<dyn Model>, config: InferenceSessionConfig, llama2: bool) -> Self {
         Self { 
             model, 
             config,
+            llama2,
         }
     }
 
@@ -26,23 +28,51 @@ impl Engine {
     
         let mut rng = thread_rng();
     
-        let init_prompt = "Below is an instruction that describes a task. Write a response that appropriately completes the request.\n\n";
-        let mut prompt = init_prompt.to_string();
+        let mut prompt = String::new();
 
-        for message in messages {
-            match message.role.as_str() {
-                "user" | "system" => {
-                    prompt += format!("### Instruction:\n\n{}\n", message.content).as_str();
-                },
-                "assistant" => {
-                    prompt += format!("### Response:\n\n{}\n", message.content).as_str();
+        if !self.llama2 {
+            prompt += "Below is an instruction that describes a task. Write a response that appropriately completes the request.\n\n";
+
+            for message in messages {
+                match message.role.as_str() {
+                    "user" | "system" => {
+                        prompt += format!("### Instruction:\n\n{}\n", message.content).as_str();
+                    },
+                    "assistant" => {
+                        prompt += format!("### Response:\n\n{}\n", message.content).as_str();
+                    }
+                    _ => {
+                        panic!("unknown role");
+                    }
                 }
-                _ => {
-                    panic!("unknown role");
+            }
+            prompt += "### Response:\n\n";
+        } else {
+            //let mut system = "You are a helpful assistant. 你是一个乐于助人的助手。\n\n";
+            let mut system = "You are a helpful assistant. 你是一个乐于助人的助手。请你提供专业、有逻辑、内容真实、有价值的详细回复。\n\n";
+            let mut first = true;
+            for message in messages {
+                match message.role.as_str() {
+                    "system" => {
+                        system = message.content.as_str();
+                    },
+                    "user" => {
+                        if first {
+                            prompt += format!("[INST] <<SYS>>{}<</SYS>>\n\n{}[/INST]", system, message.content).as_str();
+                            first = false;
+                        } else {
+                            prompt += format!("[INST] {}\n[/INST]\n", message.content).as_str();
+                        }
+                    },
+                    "assistant" => {
+                        prompt += message.content.as_str();
+                    }
+                    _ => {
+                        panic!("unknown role");
+                    }
                 }
             }
         }
-        prompt += "### Response:\n\n";
 
         let parameters = InferenceParameters {
             sampler: Arc::new(TopPTopK {
@@ -51,6 +81,8 @@ impl Engine {
                 Default::default()
             }),
         };
+
+        info!("PROMPT:{}", prompt);
     
         let res = session.infer::<Infallible>(
             self.model.as_ref(),
