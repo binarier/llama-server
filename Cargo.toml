@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.71"
+bincode = "1.3.3"
 bytesize = "1.2.0"
 clap = { version = "4.3.15", features = ["cargo"] }
 crossbeam = { version = "0.8.2", features = ["crossbeam-channel", "crossbeam-queue"] }
@@ -21,6 +22,7 @@ serde_json = "1.0.102"
 spinoff = "0.7.0"
 tiny_http = "0.12.0"
 uuid = { version = "1.4.1", features = ["v4"]}
+zstd = "0.12.4"
 
 [features]
 default = []

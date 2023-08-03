@@ -63,6 +63,8 @@ fn main() -> Result<()> {
         config.n_threads = *n_threads;
     }
 
+    config.n_batch = 256;
+
     info!("using context size of {}", context_size);
 
     let model_params = ModelParameters {
@@ -89,7 +91,7 @@ fn main() -> Result<()> {
                     sp.update_text("Loaded hyperparameters")
                 };
             }
-            LoadProgress::ContextSize { bytes } => log::debug!(
+            LoadProgress::ContextSize { bytes } => log::info!(
                 "ggml ctx size = {}",
                 bytesize::to_string(bytes as u64, false)
             ),
@@ -311,7 +313,7 @@ fn handle_stream_request(req: ChatCompletionRequest, request: Request, engine: &
 
                 match stats {
                     Ok(stats) => {
-                        // info!("stats: {:#?}", stats);
+                        info!("stats: {:#?}", stats);
                         println!("{} tokens / {} ms, {:.2} tokens / s", stats.predict_tokens, stats.predict_duration.as_millis(), stats.predict_tokens as f64 * 1000.0 / stats.predict_duration.as_millis() as f64);
                     },
                     Err(x) => warn!("infer failed: {}", x),
