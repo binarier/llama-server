@@ -49,7 +49,7 @@ impl Engine {
             prompt += "### Response:\n\n";
         } else {
             //let mut system = "You are a helpful assistant. 你是一个乐于助人的助手。\n\n";
-            let mut system = "You are a helpful assistant. 你是一个乐于助人的助手。请你提供专业、有逻辑、内容真实、有价值的详细回复。\n\n";
+            let mut system = "You are a helpful assistant. 你是一个乐于助人的助手。请你提供专业、有逻辑、内容真实、有价值的详细回复。";
             let mut first = true;
             for message in messages {
                 match message.role.as_str() {
@@ -58,7 +58,7 @@ impl Engine {
                     },
                     "user" => {
                         if first {
-                            prompt += format!("[INST] <<SYS>>{}<</SYS>>\n\n{}[/INST]", system, message.content).as_str();
+                            prompt += format!("[INST] <<SYS>>{}\n\n<</SYS>>\n\n{}[/INST]", system, message.content).as_str();
                             first = false;
                         } else {
                             prompt += format!("[INST] {}\n[/INST]\n", message.content).as_str();
