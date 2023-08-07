@@ -27,4 +27,6 @@ COPY --from=builder /build/Rocket.toml /app
 
 ENV MODEL_TYPE=f16
 
-CMD /app/openai-server -m /models/ggml-model-$MODEL_TYPE.bin
+ENV OPENAI_SERVER_OPTS=""
+
+CMD /app/openai-server -m /models/ggml-model-$MODEL_TYPE.bin ${OPENAI_SERVER_OPTS}
