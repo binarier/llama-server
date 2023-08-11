@@ -1,9 +1,9 @@
-mod engine;
+pub mod engine;
 mod api;
 
 use std::{path::PathBuf, io::Write, time::{SystemTime, UNIX_EPOCH, Duration}, sync::{atomic::{AtomicBool, Ordering}, Arc}};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::{arg, value_parser};
 use crossbeam::channel;
 use llm::{TokenizerSource, ModelParameters, LoadProgress, InferenceSessionConfig, InferenceResponse, InferenceFeedback, ModelArchitecture};
@@ -60,12 +60,28 @@ fn main() -> Result<()> {
         )
         .arg(
             arg!(
+                --storage <path> "session path"
+            )
+            .value_parser(value_parser!(PathBuf))
+        )
+        .arg(
+            arg!(
                 --legecy "use legacy model prompt"
             )
         )
         .get_matches();
 
     let model_file = matches.get_one::<PathBuf>("model").unwrap();
+
+    let storage_path = matches.get_one::<PathBuf>("storage");
+
+    if let Some(sp) = &storage_path {
+        if !sp.exists() {
+            std::fs::create_dir_all(sp)?;
+        } else if !sp.is_dir() {
+            bail!("storage path must be a directory");
+        }
+    }
 
     let mut config: InferenceSessionConfig = Default::default();
     let context_size = matches.get_one::<usize>("context").unwrap();
@@ -153,7 +169,72 @@ fn main() -> Result<()> {
         },
     )?;
 
-    let engine = Mutex::new(Engine::new(model, config, !legecy));
+    // let s = model.start_session(config);
+
+    let engine = Mutex::new(Engine::new(model, config, !legecy, storage_path.cloned()));
+
+    // let test = true;
+
+    // if test {
+    //     let engine = engine.lock();
+
+    //     let mut ps: Option<InferenceSession> = Some(s);
+
+    //     let mut rl = rustyline::Editor::<(), DefaultHistory>::new()?;
+
+    //     loop {
+        
+    //         ps = match rl.readline(">> ") {
+    //             Ok(raw_line) => {
+    //                 let (mut x0, _) = engine.chat(ps, &[ChatMessage {
+    //                     role: "user".into(),
+    //                     content: raw_line,
+    //                     name: None,
+    //                 }], 0.5, llm::conversation_inference_callback("asdflasdfljlj", print_token)).unwrap();
+    //                 let s = String::from_utf8_lossy(x0.decoded_tokens());
+    //                 println!("s:{}", s);
+
+
+    //                 let s0 = unsafe { x0.get_snapshot() };
+
+    //                 let mut v = Vec::new();
+    //                 bincode::serialize_into(&mut v, &s0).unwrap();
+    //                 println!("len:{}", v.len());
+
+    //                 let s1 = bincode::deserialize_from(&v[..]).unwrap();
+    //                 if s0.to_owned() == s1 {
+    //                     println!("same");
+    //                 }
+    //                 let x1 = InferenceSession::from_snapshot(s1, engine.model.as_ref())?;
+
+    //                 Some(x1)
+    //             }
+    //             Err(ReadlineError::Eof) | Err(ReadlineError::Interrupted) => {
+    //                 break;
+    //             }
+    //             Err(err) => {
+    //                 log::error!("{err}");
+    //                 break;
+    //             }
+    //         };
+    
+    //     }
+    //     // let (ps, _) = engine.chat(None, &[ChatMessage {
+    //     //     role: "user".into(),
+    //     //     content: "我在上海".into(),
+    //     //     name: None,
+    //     // }], 0.5, cb).unwrap();
+
+    //     // let s = String::from_utf8_lossy(ps.decoded_tokens());
+    //     // println!("s:{}", s);
+
+    //     // let (ps, _) = engine.chat(Some(ps), &[ChatMessage {
+    //     //     role: "user".into(),
+    //     //     content: "我在什么国家？".into(),
+    //     //     name: None,
+    //     // }], 0.5, cb).unwrap();
+    //     return Ok(());
+    // }
 
     let server = Server::http("0.0.0.0:8000").unwrap();
     println!("Server listening on port 8000...");
@@ -228,7 +309,7 @@ fn handle_stream_request(req: ChatCompletionRequest, request: Request, engine: &
     let uuid = uuid::Uuid::new_v4().to_string();
     let temperature = req.temperature.unwrap_or(1f32);
 
-    crossbeam::scope(|s| {
+    crossbeam::scope(move |s| {
 
         match engine.try_lock_for(Duration::from_secs(60)) {
             Some(engine) => {
@@ -239,7 +320,7 @@ fn handle_stream_request(req: ChatCompletionRequest, request: Request, engine: &
                 s.spawn(move |_| {
                     if req.stream {
 
-                        let mut writer = request.into_writer();
+                        let mut writer: Box<dyn Write + Send> = request.into_writer();
             
                         if let Err(x) = write_message_header(&mut writer, &HTTPVersion(1, 1), &StatusCode(200), &SSE_HEADERS) {
                             warn!("error while writing header: {}", x);
@@ -282,6 +363,8 @@ fn handle_stream_request(req: ChatCompletionRequest, request: Request, engine: &
                                 t.store(true, Ordering::Relaxed);
                             }
                         }
+                        writer.flush().unwrap();
+                        drop(writer);
                     } else {
                         let txt = rx.into_iter().collect::<Vec<String>>().join("");
                         let json = json!({
@@ -311,10 +394,17 @@ fn handle_stream_request(req: ChatCompletionRequest, request: Request, engine: &
                 });
 
                 // 主线程跑llm
-                let stats = engine.chat(&msgs, temperature, |r| {
+                let stats = engine.chat(None, &msgs, temperature, |r| {
                     match (terminate.load(Ordering::Relaxed), &r) {
-                        (true, _) => Ok(InferenceFeedback::Halt),
-                        (false, InferenceResponse::InferredToken(t)) => {
+                        (true, _) => {
+                            warn!("terminated");
+                            Ok(InferenceFeedback::Halt)
+                        }
+                        (_, InferenceResponse::EotToken) => {
+                            warn!("eot");
+                            Ok(InferenceFeedback::Halt)
+                        }
+                        (_, InferenceResponse::InferredToken(t)) => {
                             print!("{t}");
                             std::io::stdout().flush().unwrap();
             
@@ -328,7 +418,7 @@ fn handle_stream_request(req: ChatCompletionRequest, request: Request, engine: &
                 drop(tx);
 
                 match stats {
-                    Ok(stats) => {
+                    Ok((_ps, stats)) => {
                         info!("stats: {:#?}", stats);
                         println!("{} tokens / {} ms, {:.2} tokens / s", stats.predict_tokens, stats.predict_duration.as_millis(), stats.predict_tokens as f64 * 1000.0 / stats.predict_duration.as_millis() as f64);
                     },
