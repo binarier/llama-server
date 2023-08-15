@@ -1,7 +1,7 @@
-use std::{convert::Infallible, sync::Arc, fs::File, io::{BufWriter, BufReader}, time::Instant, path::{Path, PathBuf}};
+use std::{convert::Infallible, fs::File, io::{BufWriter, BufReader}, time::Instant, path::{Path, PathBuf}, str::FromStr, sync::{Mutex, Arc}};
 
 use anyhow::Result;
-use llm::{Model, InferenceParameters, InferenceSessionConfig, InferenceStats, InferenceResponse, InferenceFeedback, samplers::TopPTopK, InferenceSession};
+use llm::{Model, InferenceParameters, InferenceSessionConfig, InferenceStats, InferenceResponse, InferenceFeedback, samplers::ConfiguredSamplers, InferenceSession};
 use log::info;
 use rand::thread_rng;
 use zstd::{Encoder, Decoder};
@@ -107,12 +107,21 @@ impl Engine {
             }
         }
 
+        // let parameters = InferenceParameters {
+        //     sampler: Arc::new(TopPTopK {
+        //         temperature,
+        //         top_p: 0.9,
+        //         top_k: 40,
+        //         repeat_penalty: 1.1,
+        //         ..
+        //         Default::default()
+        //     }),
+        // };
+
+        let opts = format!("topp:p=0.9/topk:k=40/temperature:{}", temperature);
+        let samplers =  ConfiguredSamplers::from_str(&opts)?;
         let parameters = InferenceParameters {
-            sampler: Arc::new(TopPTopK {
-                temperature,
-                ..
-                Default::default()
-            }),
+            sampler: Arc::new(Mutex::new(samplers.builder.into_chain()))
         };
 
         info!("PROMPT:[{}] {}", has_session, prompt);
