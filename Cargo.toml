@@ -28,5 +28,5 @@ uuid = { version = "1.4.1", features = ["v4"]}
 zstd = "0.12.4"
 
 [features]
-default = ["cublas"]
+default = []
 cublas = ["llm/cublas"]
