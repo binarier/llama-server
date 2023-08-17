@@ -16,6 +16,7 @@ pub struct Engine {
     llama2: bool,
     _storage_path: Option<PathBuf>,
     admindb: Option<Pool>,
+    hostname: String,
 }
 
 impl Engine {
@@ -31,12 +32,15 @@ impl Engine {
             None
         };
 
+        let hostname = gethostname::gethostname().to_string_lossy().to_string();
+
         Ok(Self { 
             model, 
             config,
             llama2,
             _storage_path: storage_path,
             admindb,
+            hostname,
         })
     }
 
@@ -143,7 +147,7 @@ impl Engine {
 
         info!("PROMPT:[{}] {}", has_session, prompt);
 
-        if let Err(x) = admindb_insert(&self.admindb, &session_id, &prompt, &sampler_opts) {
+        if let Err(x) = self.admindb_insert(&session_id, &prompt, &sampler_opts) {
             log::warn!("admindb insert error: {}", x);
         }
 
@@ -212,36 +216,35 @@ impl Engine {
 
         let stats = res.map_err(|x| anyhow::anyhow!("{}", x))?;
 
-        if let Err(x) = admindb_update(&self.admindb, &session_id, &infer_tokens, &stats) {
+        if let Err(x) = self.admindb_update(&session_id, &infer_tokens, &stats) {
             log::warn!("admindb update error: {}", x);
         }
 
         Ok((session, stats))
     }
-}
 
-
-fn admindb_insert(db: &Option<Pool>, session_id: &String, input_tokens: &String, sampler_opts: &String) -> Result<()> {
-    if let Some(db) = db {
-        let mut conn = db.get_conn()?;
-        conn.exec_drop("INSERT INTO OA_CHAT (SESSION_ID, INPUT_TOKENS, SAMPLER_OPTS, LAST_UPDATE) VALUES (?, ?, ?, NOW())", (session_id, input_tokens, sampler_opts))?;
+    fn admindb_insert(&self, session_id: &String, input_tokens: &String, sampler_opts: &String) -> Result<()> {
+        if let Some(db) = &self.admindb {
+            let mut conn = db.get_conn()?;
+            conn.exec_drop("INSERT INTO OA_CHAT (HOSTNAME, SESSION_ID, INPUT_TOKENS, SAMPLER_OPTS, LAST_UPDATE) VALUES (?, ?, ?, ?, NOW())", (&self.hostname, session_id, input_tokens, sampler_opts))?;
+        }
+    
+        Ok(())
     }
 
-    Ok(())
-}
-
-fn admindb_update(db: &Option<Pool>, session_id: &String, infer_tokens: &String, stats: &InferenceStats) -> Result<()> {
-    if let Some(db) = db {
-        let mut conn = db.get_conn()?;
-        conn.exec_drop("UPDATE OA_CHAT SET INFER_TOKENS = ?, STATS_PROMPT_DURATION_MS = ?, STATS_PROMPT_TOKENS_PER_SECOND=?, STATS_INFER_DURATION_MS = ?, STATS_INFER_TOKENS_PER_SECOND = ?, LAST_UPDATE = NOW() WHERE SESSION_ID = ?", 
-            (infer_tokens, 
-                stats.feed_prompt_duration.as_millis(), stats.prompt_tokens as f64 / stats.feed_prompt_duration.as_millis() as f64 * 1000f64,
-                stats.predict_duration.as_millis(), stats.predict_tokens as f64 / stats.predict_duration.as_millis() as f64 * 1000f64,
-                session_id
-            ))?;
+    fn admindb_update(&self, session_id: &String, infer_tokens: &String, stats: &InferenceStats) -> Result<()> {
+        if let Some(db) = &self.admindb {
+            let mut conn = db.get_conn()?;
+            conn.exec_drop("UPDATE OA_CHAT SET INFER_TOKENS = ?, STATS_PROMPT_DURATION_MS = ?, STATS_PROMPT_TOKENS_PER_SECOND=?, STATS_INFER_DURATION_MS = ?, STATS_INFER_TOKENS_PER_SECOND = ?, LAST_UPDATE = NOW() WHERE SESSION_ID = ?", 
+                (infer_tokens, 
+                    stats.feed_prompt_duration.as_millis(), stats.prompt_tokens as f64 / stats.feed_prompt_duration.as_millis() as f64 * 1000f64,
+                    stats.predict_duration.as_millis(), stats.predict_tokens as f64 / stats.predict_duration.as_millis() as f64 * 1000f64,
+                    session_id
+                ))?;
+        }
+    
+        Ok(())
     }
-
-    Ok(())
 }
 
 pub fn write_session(mut session: InferenceSession, path: &Path) -> Result<()> {
