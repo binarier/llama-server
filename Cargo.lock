@@ -1472,6 +1472,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09fc20d2ca12cb9f044c93e3bd6d32d523e6e2ec3db4f7b2939cd99026ecd3f0"
 
 [[package]]
+name = "llama-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "bytesize",
+ "clap",
+ "crossbeam",
+ "gethostname",
+ "lazy_static",
+ "llm",
+ "log",
+ "mysql",
+ "parking_lot",
+ "pretty_env_logger",
+ "rand",
+ "regex",
+ "serde",
+ "serde_json",
+ "spinoff",
+ "tiny_http",
+ "uuid",
+ "zstd 0.12.4",
+]
+
+[[package]]
 name = "llm"
 version = "0.2.0-dev"
 dependencies = [
@@ -1879,32 +1905,6 @@ checksum = "7b829e3d7e9cc74c7e315ee8edb185bf4190da5acde74afd7fc59c35b1f086e7"
 dependencies = [
  "cc",
  "pkg-config",
-]
-
-[[package]]
-name = "openai-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bincode",
- "bytesize",
- "clap",
- "crossbeam",
- "gethostname",
- "lazy_static",
- "llm",
- "log",
- "mysql",
- "parking_lot",
- "pretty_env_logger",
- "rand",
- "regex",
- "serde",
- "serde_json",
- "spinoff",
- "tiny_http",
- "uuid",
- "zstd 0.12.4",
 ]
 
 [[package]]
