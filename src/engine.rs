@@ -1,8 +1,9 @@
 use std::{convert::Infallible, fs::File, io::{BufWriter, BufReader}, time::Instant, path::{Path, PathBuf}, str::FromStr, sync::{Mutex, Arc}};
 
-use anyhow::Result;
+use anyhow::{Result, Context};
 use llm::{Model, InferenceParameters, InferenceSessionConfig, InferenceStats, InferenceResponse, InferenceFeedback, samplers::ConfiguredSamplers, InferenceSession};
 use log::info;
+use mysql::{Pool, prelude::*};
 use rand::thread_rng;
 use zstd::{Encoder, Decoder};
 
@@ -13,19 +14,27 @@ pub struct Engine {
     pub config: InferenceSessionConfig,
     llama2: bool,
     _storage_path: Option<PathBuf>,
+    admindb: Option<Pool>,
 }
 
 impl Engine {
-    pub fn new(model: Box<dyn Model>, config: InferenceSessionConfig, llama2: bool, storage_path: Option<PathBuf>) -> Self {
-        Self { 
+    pub fn new(model: Box<dyn Model>, config: InferenceSessionConfig, llama2: bool, storage_path: Option<PathBuf>, admindb_url: Option<String>) -> Result<Self> {
+        let admindb = if let Some(url) = admindb_url {
+            Some(Pool::new(url.as_str()).context("连接管理数据库")?)
+        } else {
+            None
+        };
+
+        Ok(Self { 
             model, 
             config,
             llama2,
             _storage_path: storage_path,
-        }
+            admindb,
+        })
     }
 
-    pub fn chat(&self, persisted_session: Option<InferenceSession>, messages: &[ChatMessage], temperature: f32, callback: impl FnMut(InferenceResponse) -> std::result::Result<InferenceFeedback, std::convert::Infallible>) -> Result<(InferenceSession, InferenceStats)> {
+    pub fn chat(&self, persisted_session: Option<InferenceSession>, messages: &[ChatMessage], temperature: f32, mut callback: impl FnMut(InferenceResponse) -> std::result::Result<InferenceFeedback, std::convert::Infallible>) -> Result<(InferenceSession, InferenceStats)> {
         let mut rng = thread_rng();
 
         // let mut session = None;
@@ -44,6 +53,8 @@ impl Engine {
         // //     }
         // // }
         let has_session = persisted_session.is_some();
+
+        let session_id = uuid::Uuid::new_v4().to_string();
 
         let messages = if !has_session {
             messages
@@ -118,14 +129,20 @@ impl Engine {
         //     }),
         // };
 
-        let opts = format!("topp:p=0.9/topk:k=40/temperature:{}", temperature);
-        let samplers =  ConfiguredSamplers::from_str(&opts)?;
+        let sampler_opts = format!("topp:p=0.9/topk:k=40/temperature:{}", temperature);
+        let samplers =  ConfiguredSamplers::from_str(&sampler_opts)?;
         let parameters = InferenceParameters {
             sampler: Arc::new(Mutex::new(samplers.builder.into_chain()))
         };
 
         info!("PROMPT:[{}] {}", has_session, prompt);
-    
+
+        if let Err(x) = admindb_insert(&self.admindb, &session_id, &prompt, &sampler_opts) {
+            log::warn!("admindb insert error: {}", x);
+        }
+
+        let mut infer_tokens = String::new();
+
         let res = session.infer::<Infallible>(
             self.model.as_ref(),
             &mut rng,
@@ -137,7 +154,12 @@ impl Engine {
             },
             // OutputRequest
             &mut Default::default(),
-            callback,
+            |r| {
+                if let InferenceResponse::InferredToken(t) = &r {
+                    infer_tokens += t.as_str();
+                }
+                callback(r)
+            }
         );
         println!();
 
@@ -183,10 +205,38 @@ impl Engine {
         // info!("snapshot took {:?} ms", start.elapsed().as_millis());
 
         let stats = res.map_err(|x| anyhow::anyhow!("{}", x))?;
+
+        if let Err(x) = admindb_update(&self.admindb, &session_id, &infer_tokens, &stats) {
+            log::warn!("admindb update error: {}", x);
+        }
+
         Ok((session, stats))
     }
 }
 
+
+fn admindb_insert(db: &Option<Pool>, session_id: &String, input_tokens: &String, sampler_opts: &String) -> Result<()> {
+    if let Some(db) = db {
+        let mut conn = db.get_conn()?;
+        conn.exec_drop("INSERT INTO OA_CHAT (SESSION_ID, INPUT_TOKENS, SAMPLER_OPTS, LAST_UPDATE) VALUES (?, ?, ?, NOW())", (session_id, input_tokens, sampler_opts))?;
+    }
+
+    Ok(())
+}
+
+fn admindb_update(db: &Option<Pool>, session_id: &String, infer_tokens: &String, stats: &InferenceStats) -> Result<()> {
+    if let Some(db) = db {
+        let mut conn = db.get_conn()?;
+        conn.exec_drop("UPDATE OA_CHAT SET INFER_TOKENS = ?, STATS_PROMPT_DURATION_MS = ?, STATS_PROMPT_TOKENS_PER_SECOND=?, STATS_INFER_DURATION_MS = ?, STATS_INFER_TOKENS_PER_SECOND = ?, LAST_UPDATE = NOW() WHERE SESSION_ID = ?", 
+            (infer_tokens, 
+                stats.feed_prompt_duration.as_millis(), stats.prompt_tokens as f64 / stats.feed_prompt_duration.as_millis() as f64 * 1000f64,
+                stats.predict_duration.as_millis(), stats.predict_tokens as f64 / stats.predict_duration.as_millis() as f64 * 1000f64,
+                session_id
+            ))?;
+    }
+
+    Ok(())
+}
 
 pub fn write_session(mut session: InferenceSession, path: &Path) -> Result<()> {
     // SAFETY: the session is consumed here, so nothing else can access it.

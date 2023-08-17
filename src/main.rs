@@ -69,6 +69,11 @@ fn main() -> Result<()> {
                 --legecy "use legacy model prompt"
             )
         )
+        .arg(
+            arg!(
+                --admindb <url> "URL of admin mysql db(mysql://user:passwd@ip:port/dbname)"
+            )
+        )
         .get_matches();
 
     let model_file = matches.get_one::<PathBuf>("model").unwrap();
@@ -86,6 +91,7 @@ fn main() -> Result<()> {
     let mut config: InferenceSessionConfig = Default::default();
     let context_size = matches.get_one::<usize>("context").unwrap();
     let legecy = matches.get_flag("legecy");
+    let admindb = matches.get_one::<String>("admindb").cloned();
 
     if let Some(n_threads) = matches.get_one::<usize>("threads") {
         info!("using {} threads", n_threads);
@@ -171,7 +177,7 @@ fn main() -> Result<()> {
 
     // let s = model.start_session(config);
 
-    let engine = Mutex::new(Engine::new(model, config, !legecy, storage_path.cloned()));
+    let engine = Mutex::new(Engine::new(model, config, !legecy, storage_path.cloned(), admindb)?);
 
     // let test = true;
 

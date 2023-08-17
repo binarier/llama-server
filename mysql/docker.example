@@ -1,0 +1,18 @@
+#mysql:
+#    image: mysql:8.0.22
+#    ports:
+#      - ${mysql_port}:3306
+#    environment:
+#      - MYSQL_ROOT_PASSWORD=111111
+#      - MYSQL_DATABASE=exagate
+#      - MYSQL_USER=exagate
+#      - MYSQL_PASSWORD=exagate
+#    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+#    networks:
+#      - exagate-net
+#    volumes:
+#      - ./mysql:/etc/mysql/conf.d
+#      - db-data:/var/lib/mysql
+#    restart: always
+
+docker run --rm --name open2ai-admindb -p 3313:3306 -v $(pwd)/admindb:/var/lib/mysql -v ./mysql/conf.d:/etc/mysql/conf.d -e MYSQL_ROOT_PASSWORD=111111 -e MYSQL_DATABASE=open2ai -e MYSQL_USER=open2 -e MYSQL_PASSWORD=ai -d mysql:8.0.22 --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
