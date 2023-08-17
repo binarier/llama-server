@@ -71,7 +71,7 @@ fn main() -> Result<()> {
         )
         .arg(
             arg!(
-                --admindb <url> "URL of admin mysql db(mysql://user:passwd@ip:port/dbname)"
+                --admindb <url> "URL of admin mysql db(mysql://user:passwd@ip:port/dbname), or use env var ADMINDB"
             )
         )
         .get_matches();
@@ -92,6 +92,11 @@ fn main() -> Result<()> {
     let context_size = matches.get_one::<usize>("context").unwrap();
     let legecy = matches.get_flag("legecy");
     let admindb = matches.get_one::<String>("admindb").cloned();
+
+    // 命令行优先
+    let admindb = admindb.map_or_else(|| {
+        std::env::var("ADMINDB").ok().filter(|x| !x.is_empty())
+    }, Some);
 
     if let Some(n_threads) = matches.get_one::<usize>("threads") {
         info!("using {} threads", n_threads);

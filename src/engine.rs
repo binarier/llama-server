@@ -1,10 +1,11 @@
 use std::{convert::Infallible, fs::File, io::{BufWriter, BufReader}, time::Instant, path::{Path, PathBuf}, str::FromStr, sync::{Mutex, Arc}};
 
-use anyhow::{Result, Context};
+use anyhow::{Result, Context, bail};
 use llm::{Model, InferenceParameters, InferenceSessionConfig, InferenceStats, InferenceResponse, InferenceFeedback, samplers::ConfiguredSamplers, InferenceSession};
 use log::info;
 use mysql::{Pool, prelude::*};
 use rand::thread_rng;
+use regex::Regex;
 use zstd::{Encoder, Decoder};
 
 use crate::api::ChatMessage;
@@ -20,6 +21,11 @@ pub struct Engine {
 impl Engine {
     pub fn new(model: Box<dyn Model>, config: InferenceSessionConfig, llama2: bool, storage_path: Option<PathBuf>, admindb_url: Option<String>) -> Result<Self> {
         let admindb = if let Some(url) = admindb_url {
+            let re = Regex::new(r"^mysql://.*:.*@.*:.*/.*$")?;
+            if !re.is_match(&url) {
+                bail!("invalid db url");
+            }
+            info!("connecting to db {}", hide_password(&url));
             Some(Pool::new(url.as_str()).context("连接管理数据库")?)
         } else {
             None
@@ -257,4 +263,12 @@ pub fn read_session(model: &dyn Model, path: &Path) -> Result<InferenceSession> 
     let session = InferenceSession::from_snapshot(snapshot, model)?;
     log::info!("Loaded inference session from {path:?} in {} ms", start.elapsed().as_millis());
     Ok(session)
+}
+
+fn hide_password(mysql_conn_str: &str) -> String {
+    let end = mysql_conn_str.find('@').unwrap_or(mysql_conn_str.len());
+    let start = mysql_conn_str[..end].rfind(':').unwrap_or(0) + 1;
+    let mut masked_conn_str = mysql_conn_str.to_string();
+    masked_conn_str.replace_range(start..end, "****");
+    masked_conn_str
 }
